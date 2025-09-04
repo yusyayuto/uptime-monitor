@@ -1,0 +1,15 @@
+docs/architecture.md
+docs/naming.md
+docs/slo.md
+docs/runbook.md
+infra/modules/.keep
+infra/envs/dev/.keep
+infra/envs/stg/.keep
+infra/envs/prod/.keep
+app/api/.keep
+app/worker/.keep
+app/pkg/.keep
+.github/workflows/.keep
+.github/ISSUE_TEMPLATE/bug_report.md
+.github/ISSUE_TEMPLATE/feature_request.md
+.github/PULL_REQUEST_TEMPLATE.md
