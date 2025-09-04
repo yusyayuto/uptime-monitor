@@ -96,7 +96,6 @@ app/             # Go（api, worker, pkg 共通）
 ```
 
 ## License
-
 MIT
 
 ---
