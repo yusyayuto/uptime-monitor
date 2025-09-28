@@ -1,0 +1,124 @@
+name: ci
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+  id-token: write
+  packages: write
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    env:
+      GO111MODULE: on
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Cache Go modules
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('app/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Go fmt check
+        run: |
+          cd app
+          gofmt -l ./cmd ./internal | tee fmt.log
+          if [ -s fmt.log ]; then
+            echo "Go files need formatting"
+            cat fmt.log
+            exit 1
+          fi
+
+      - name: Go vet
+        run: |
+          cd app
+          go vet ./...
+
+      - name: Go test
+        run: |
+          cd app
+          go test ./...
+
+  terraform-plan:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.event_name == 'pull_request'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.5.7
+
+      - name: Terraform fmt
+        run: terraform fmt -recursive -check
+
+      - name: Terraform init
+        run: |
+          cd infra/envs/dev
+          terraform init -backend=false
+
+      - name: Terraform plan
+        env:
+          TF_VAR_certificate_arn: dummy
+        run: |
+          cd infra/envs/dev
+          terraform plan -lock=false -input=false -out=tfplan || true
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ROLE_ARN }}
+          aws-region: ap-northeast-1
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        id: build-image
+        run: |
+          docker build -t uptime-monitor .
+          IMAGE_URI="${{ steps.login-ecr.outputs.registry }}/uptime-monitor:${GITHUB_SHA}"
+          docker tag uptime-monitor "$IMAGE_URI"
+          docker push "$IMAGE_URI"
+          echo "image_uri=$IMAGE_URI" >> "$GITHUB_OUTPUT"
+
+      - name: Render AppSpec
+        run: |
+          IMAGE_URI="${{ steps.build-image.outputs.image_uri }}"
+          envsubst < codedeploy-appspec.yaml > rendered-appspec.yaml
+
+      - name: Create CodeDeploy deployment
+        run: |
+          aws deploy create-deployment \
+            --application-name ${{ secrets.CODEDEPLOY_APP }} \
+            --deployment-group-name ${{ secrets.CODEDEPLOY_DEPLOYMENT_GROUP }} \
+            --deployment-config-name CodeDeployDefault.ECSAllAtOnce \
+            --revision revisionType=AppSpecContent,appSpecContent={content='$(base64 -w0 rendered-appspec.yaml)'}
